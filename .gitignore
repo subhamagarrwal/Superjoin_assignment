@@ -1,0 +1,7 @@
+backend/node_modules/
+dist/
+backend/.env
+.github/
+.vscode/
+.DS_Store
+backend/credentials/
