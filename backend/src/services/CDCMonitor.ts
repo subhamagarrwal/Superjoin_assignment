@@ -12,6 +12,18 @@ const SHEET_ID = process.env.GOOGLE_SHEET_ID!;
 const POLL_INTERVAL = Math.max(3000, parseInt(process.env.POLL_INTERVAL || '3000'));
 const SHEET_RANGE = process.env.SHEET_RANGE || 'Sheet1!A1:H20';
 
+// Redis keys for offline resilience
+const REDIS_KEYS = {
+    SHEET_SNAPSHOT: 'snapshot:sheet',           // Last known sheet state
+    DB_SNAPSHOT: 'snapshot:db',                 // Last known DB state
+    PENDING_TO_SHEET: 'pending:to_sheet',       // Changes waiting to go to Sheet
+    PENDING_TO_DB: 'pending:to_db',             // Changes waiting to go to DB
+    SHEET_ONLINE: 'status:sheet_online',        // Sheet connectivity status
+    DB_ONLINE: 'status:db_online',              // DB connectivity status
+};
+
+const SNAPSHOT_TTL = 86400; // 24 hours
+
 export class CDCMonitor {
     private lastSnapshot: Map<string, string> = new Map();
     private sheets: any;
@@ -23,6 +35,12 @@ export class CDCMonitor {
     private rateLimitedUntil: number = 0;
     private rateLimitBackoffMs: number = 5000; // Start with 5s backoff
     private consecutiveRateLimits: number = 0;
+
+    // Connectivity tracking
+    private sheetOnline: boolean = true;
+    private dbOnline: boolean = true;
+    private lastSheetError: string = '';
+    private lastDbError: string = '';
 
     private syncDebounceTimer: NodeJS.Timeout | null = null;
     private readonly SYNC_DEBOUNCE = 500;
@@ -37,22 +55,225 @@ export class CDCMonitor {
 
             await jwtClient.authorize();
             this.sheets = google.sheets({ version: 'v4', auth: jwtClient });
+            
+            // Try to load from Redis cache first (for fast startup)
+            await this.loadSnapshotFromRedis();
+            
+            // Then try to fetch fresh data
             await this.loadInitialSnapshot();
 
             console.log('✅ CDC Monitor initialized');
         } catch (error) {
             console.error('❌ CDC Monitor initialization failed:', error);
-            throw error;
+            // Try to recover from Redis cache
+            const recovered = await this.loadSnapshotFromRedis();
+            if (recovered) {
+                console.log('⚠️ Running in offline mode with cached data');
+            } else {
+                throw error;
+            }
         }
+    }
+
+    /**
+     * Load snapshot from Redis cache (for offline resilience)
+     */
+    private async loadSnapshotFromRedis(): Promise<boolean> {
+        try {
+            const cached = await redisClient.get(REDIS_KEYS.SHEET_SNAPSHOT);
+            if (cached) {
+                const data = JSON.parse(cached);
+                this.lastSnapshot = new Map(Object.entries(data));
+                console.log(`📦 Loaded ${this.lastSnapshot.size} cells from Redis cache`);
+                return true;
+            }
+        } catch (error) {
+            console.warn('⚠️ Could not load snapshot from Redis:', error);
+        }
+        return false;
+    }
+
+    /**
+     * Save current snapshot to Redis (for offline resilience)
+     */
+    private async saveSnapshotToRedis(data: Map<string, string>): Promise<void> {
+        try {
+            const obj: Record<string, string> = {};
+            for (const [key, value] of data.entries()) {
+                obj[key] = value;
+            }
+            await redisClient.set(
+                REDIS_KEYS.SHEET_SNAPSHOT, 
+                JSON.stringify(obj), 
+                'EX', 
+                SNAPSHOT_TTL
+            );
+        } catch (error) {
+            console.warn('⚠️ Could not save snapshot to Redis:', error);
+        }
+    }
+
+    /**
+     * Queue a change for later sync when target is offline
+     */
+    private async queuePendingChange(
+        target: 'sheet' | 'db',
+        change: { row: number; col: string; value: string; source: string }
+    ): Promise<void> {
+        const key = target === 'sheet' ? REDIS_KEYS.PENDING_TO_SHEET : REDIS_KEYS.PENDING_TO_DB;
+        try {
+            await redisClient.rpush(key, JSON.stringify({
+                ...change,
+                timestamp: Date.now()
+            }));
+            console.log(`📥 Queued change to ${target}: ${change.col}${change.row} = "${change.value}"`);
+        } catch (error) {
+            console.error(`❌ Failed to queue change to ${target}:`, error);
+        }
+    }
+
+    /**
+     * Process pending changes when connectivity is restored
+     */
+    private async processPendingChanges(target: 'sheet' | 'db'): Promise<number> {
+        const key = target === 'sheet' ? REDIS_KEYS.PENDING_TO_SHEET : REDIS_KEYS.PENDING_TO_DB;
+        let processed = 0;
+
+        try {
+            const length = await redisClient.llen(key);
+            if (length === 0) return 0;
+
+            console.log(`\n🔄 Processing ${length} pending changes to ${target}...`);
+
+            while (true) {
+                const item = await redisClient.lpop(key);
+                if (!item) break;
+
+                const change = JSON.parse(item);
+                
+                try {
+                    if (target === 'sheet') {
+                        await this.pushSingleCellToSheet(change.row, change.col, change.value);
+                    } else {
+                        await this.pushSingleCellToDb(change.row, change.col, change.value, change.source);
+                    }
+                    processed++;
+                } catch (error) {
+                    // Re-queue failed changes
+                    await redisClient.rpush(key, item);
+                    console.error(`❌ Failed to process pending change, re-queued:`, error);
+                    break; // Stop processing if we hit an error
+                }
+            }
+
+            if (processed > 0) {
+                console.log(`✅ Processed ${processed} pending changes to ${target}`);
+            }
+        } catch (error) {
+            console.error(`❌ Error processing pending ${target} changes:`, error);
+        }
+
+        return processed;
+    }
+
+    /**
+     * Push a single cell to Google Sheet
+     */
+    private async pushSingleCellToSheet(row: number, col: string, value: string): Promise<void> {
+        const range = `Sheet1!${col}${row}`;
+        await this.sheets.spreadsheets.values.update({
+            spreadsheetId: SHEET_ID,
+            range,
+            valueInputOption: 'RAW',
+            requestBody: { values: [[value]] }
+        });
+    }
+
+    /**
+     * Push a single cell to DB
+     */
+    private async pushSingleCellToDb(row: number, col: string, value: string, source: string): Promise<void> {
+        if (value === '') {
+            await pool.query('DELETE FROM users WHERE row_num = ? AND col_name = ?', [row, col]);
+        } else {
+            await pool.query(
+                `INSERT INTO users (row_num, col_name, cell_value, last_modified_by)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE cell_value = VALUES(cell_value), last_modified_by = VALUES(last_modified_by)`,
+                [row, col, value, source]
+            );
+        }
+    }
+
+    /**
+     * Check and update connectivity status
+     */
+    async checkConnectivity(): Promise<{ sheet: boolean; db: boolean }> {
+        // Check DB
+        try {
+            await pool.query('SELECT 1');
+            if (!this.dbOnline) {
+                console.log('✅ Database connectivity restored');
+                this.dbOnline = true;
+                this.lastDbError = '';
+                // Process pending DB changes
+                await this.processPendingChanges('db');
+            }
+        } catch (error: any) {
+            if (this.dbOnline) {
+                console.warn('⚠️ Database is offline:', error.message);
+                this.dbOnline = false;
+                this.lastDbError = error.message;
+            }
+        }
+
+        // Check Sheet (done during fetch, just return current status)
+        return { sheet: this.sheetOnline, db: this.dbOnline };
+    }
+
+    /**
+     * Get current connectivity and cache status (for API endpoint)
+     */
+    getStatus(): {
+        sheetOnline: boolean;
+        dbOnline: boolean;
+        lastSheetError: string;
+        lastDbError: string;
+        snapshotSize: number;
+        rateLimited: boolean;
+        rateLimitBackoffMs: number;
+    } {
+        return {
+            sheetOnline: this.sheetOnline,
+            dbOnline: this.dbOnline,
+            lastSheetError: this.lastSheetError,
+            lastDbError: this.lastDbError,
+            snapshotSize: this.lastSnapshot.size,
+            rateLimited: Date.now() < this.rateLimitedUntil,
+            rateLimitBackoffMs: this.rateLimitBackoffMs
+        };
+    }
+
+    /**
+     * Get cached data (for offline reads)
+     */
+    getCachedSnapshot(): Map<string, string> {
+        return new Map(this.lastSnapshot);
     }
 
     private async loadInitialSnapshot() {
         const data = await this.fetchSheetData();
-        if (!data) return;
+        if (!data) {
+            console.warn('⚠️ Could not fetch initial sheet data, using cached snapshot');
+            return;
+        }
 
         for (const [key, value] of data.entries()) {
             this.lastSnapshot.set(key, value);
         }
+
+        // Save to Redis for offline resilience
+        await this.saveSnapshotToRedis(data);
 
         await this.syncToDatabase(data);
         console.log(`📊 Initial snapshot loaded: ${data.size} cells`);
@@ -61,6 +282,7 @@ export class CDCMonitor {
     /**
      * Fetches data from the Google Sheets API with rate-limit protection.
      * Uses exponential backoff when rate-limited to avoid flooding the API.
+     * Falls back to cached data when offline.
      */
     private async fetchSheetData(): Promise<Map<string, string> | null> {
         // If we're in a rate-limit backoff window, skip this fetch
@@ -76,12 +298,21 @@ export class CDCMonitor {
                 range: SHEET_RANGE,
             });
 
-            // Success - reset backoff
+            // Success - reset backoff and mark online
             if (this.consecutiveRateLimits > 0) {
                 console.log('✅ Rate limit cleared, resuming normal polling');
             }
             this.consecutiveRateLimits = 0;
             this.rateLimitBackoffMs = 5000;
+
+            // Mark sheet as online and process pending changes
+            if (!this.sheetOnline) {
+                console.log('✅ Google Sheets connectivity restored');
+                this.sheetOnline = true;
+                this.lastSheetError = '';
+                // Process any pending changes that were queued while offline
+                await this.processPendingChanges('sheet');
+            }
 
             const rows = response.data.values || [];
             const cellMap = new Map<string, string>();
@@ -94,6 +325,9 @@ export class CDCMonitor {
                     cellMap.set(key, value || '');
                 });
             });
+
+            // Save to Redis for offline resilience
+            await this.saveSnapshotToRedis(cellMap);
 
             return cellMap;
         } catch (error: any) {
@@ -110,7 +344,12 @@ export class CDCMonitor {
                     console.warn(`⚠️ Still rate limited (attempt ${this.consecutiveRateLimits}). Backoff: ${this.rateLimitBackoffMs / 1000}s`);
                 }
             } else {
-                console.error('❌ Failed to fetch sheet data:', error.message || error);
+                // Network error or other issue - mark as offline
+                if (this.sheetOnline) {
+                    console.warn('⚠️ Google Sheets is offline:', error.message || error);
+                    this.sheetOnline = false;
+                    this.lastSheetError = error.message || 'Unknown error';
+                }
             }
             return null;
         }
@@ -132,10 +371,47 @@ export class CDCMonitor {
                         last_modified_by = 'sheet'`,
                     [row, col, value]
                 );
-            } catch (error) {
-                console.error(`❌ Failed to sync cell ${col}${row}:`, error);
+                
+                // Mark DB as online if it was offline
+                if (!this.dbOnline) {
+                    console.log('✅ Database connectivity restored');
+                    this.dbOnline = true;
+                    this.lastDbError = '';
+                    await this.processPendingChanges('db');
+                }
+            } catch (error: any) {
+                // If DB is offline, queue the change
+                if (this.isDbOfflineError(error)) {
+                    if (this.dbOnline) {
+                        console.warn('⚠️ Database is offline:', error.message);
+                        this.dbOnline = false;
+                        this.lastDbError = error.message;
+                    }
+                    await this.queuePendingChange('db', { row, col, value, source: 'sheet' });
+                } else {
+                    console.error(`❌ Failed to sync cell ${col}${row}:`, error);
+                }
             }
         }
+    }
+
+    /**
+     * Check if an error indicates DB is offline
+     */
+    private isDbOfflineError(error: any): boolean {
+        const offlineErrors = [
+            'ECONNREFUSED',
+            'ETIMEDOUT',
+            'ENOTFOUND',
+            'PROTOCOL_CONNECTION_LOST',
+            'ER_ACCESS_DENIED_ERROR',
+            'ECONNRESET'
+        ];
+        return offlineErrors.some(e => 
+            error.code === e || 
+            error.message?.includes(e) ||
+            error.errno === e
+        );
     }
 
     start() {
@@ -164,6 +440,9 @@ export class CDCMonitor {
         this.isPollInProgress = true;
 
         try {
+            // Check DB connectivity periodically
+            await this.checkConnectivity();
+
             const currentData = await this.fetchSheetData();
             if (!currentData) return;
 
@@ -218,8 +497,30 @@ export class CDCMonitor {
                             );
                         }
                         console.log(`   ✅ Synced ${change.col}${change.row} to database`);
-                    } catch (error) {
-                        console.error(`   ❌ Failed to sync ${change.col}${change.row}:`, error);
+                        
+                        // Mark DB as online
+                        if (!this.dbOnline) {
+                            this.dbOnline = true;
+                            this.lastDbError = '';
+                            console.log('✅ Database connectivity restored');
+                        }
+                    } catch (error: any) {
+                        // If DB is offline, queue the change
+                        if (this.isDbOfflineError(error)) {
+                            if (this.dbOnline) {
+                                console.warn('⚠️ Database is offline:', error.message);
+                                this.dbOnline = false;
+                                this.lastDbError = error.message;
+                            }
+                            await this.queuePendingChange('db', {
+                                row: change.row,
+                                col: change.col,
+                                value: change.newValue,
+                                source: 'sheet'
+                            });
+                        } else {
+                            console.error(`   ❌ Failed to sync ${change.col}${change.row}:`, error);
+                        }
                     }
                 }
             }
@@ -245,14 +546,68 @@ export class CDCMonitor {
 
     async syncFromDatabase() {
         try {
-            const [dbRows]: any = await pool.query(
-                `SELECT row_num, col_name, cell_value, last_modified_by FROM users 
-                 ORDER BY row_num, col_name`
-            );
+            // Check if DB is online
+            let dbRows: any[];
+            try {
+                const [rows]: any = await pool.query(
+                    `SELECT row_num, col_name, cell_value, last_modified_by FROM users 
+                     ORDER BY row_num, col_name`
+                );
+                dbRows = rows;
+                
+                // Mark DB as online
+                if (!this.dbOnline) {
+                    console.log('✅ Database connectivity restored');
+                    this.dbOnline = true;
+                    this.lastDbError = '';
+                    await this.processPendingChanges('db');
+                }
+                
+                // Save DB snapshot to Redis
+                await this.saveDbSnapshotToRedis(dbRows);
+            } catch (error: any) {
+                if (this.isDbOfflineError(error)) {
+                    if (this.dbOnline) {
+                        console.warn('⚠️ Database is offline:', error.message);
+                        this.dbOnline = false;
+                        this.lastDbError = error.message;
+                    }
+                    // Try to load from Redis cache
+                    dbRows = await this.loadDbSnapshotFromRedis();
+                    if (dbRows.length === 0) {
+                        console.warn('⚠️ No cached DB data available');
+                        return;
+                    }
+                    console.log(`📦 Using cached DB snapshot (${dbRows.length} rows)`);
+                } else {
+                    throw error;
+                }
+            }
 
-            // Fetch FRESH sheet state for accurate comparison
-            const sheetData = await this.fetchSheetData();
-            if (!sheetData) return;
+            // Check if Sheet is online - use cached snapshot if not
+            let sheetData: Map<string, string> | null;
+            if (this.sheetOnline) {
+                sheetData = await this.fetchSheetData();
+            } else {
+                sheetData = null;
+            }
+            
+            if (!sheetData) {
+                // Sheet is offline - queue changes for later
+                console.log('⚠️ Google Sheets offline - queuing changes for later sync');
+                
+                for (const row of dbRows) {
+                    if (row.last_modified_by !== 'sheet') {
+                        await this.queuePendingChange('sheet', {
+                            row: row.row_num,
+                            col: row.col_name,
+                            value: row.cell_value || '',
+                            source: row.last_modified_by
+                        });
+                    }
+                }
+                return;
+            }
 
             const updates: { range: string; values: string[][] }[] = [];
             const cellsToSync: Set<string> = new Set();
@@ -294,36 +649,93 @@ export class CDCMonitor {
 
             console.log(`📡 Pushing ${updates.length} update(s) to Google Sheet...`);
 
-            await this.sheets.spreadsheets.values.batchUpdate({
-                spreadsheetId: SHEET_ID,
-                requestBody: {
-                    valueInputOption: 'RAW',
-                    data: updates,
-                },
-            });
+            try {
+                await this.sheets.spreadsheets.values.batchUpdate({
+                    spreadsheetId: SHEET_ID,
+                    requestBody: {
+                        valueInputOption: 'RAW',
+                        data: updates,
+                    },
+                });
 
-            // Mark only the SPECIFIC cells we just synced (not a blanket update)
-            for (const cell of syncedCells) {
-                await pool.query(
-                    `UPDATE users SET last_modified_by = 'sheet' 
-                     WHERE row_num = ? AND col_name = ? AND last_modified_by != 'sheet'`,
-                    [cell.row, cell.col]
-                );
+                // Mark sheet as online
+                if (!this.sheetOnline) {
+                    console.log('✅ Google Sheets connectivity restored');
+                    this.sheetOnline = true;
+                    this.lastSheetError = '';
+                }
+
+                // Mark only the SPECIFIC cells we just synced (not a blanket update)
+                for (const cell of syncedCells) {
+                    await pool.query(
+                        `UPDATE users SET last_modified_by = 'sheet' 
+                         WHERE row_num = ? AND col_name = ? AND last_modified_by != 'sheet'`,
+                        [cell.row, cell.col]
+                    ).catch(() => {}); // Ignore DB errors here, we already synced to sheet
+                }
+
+                // Update the in-memory snapshot so the next poll doesn't
+                // re-detect the values we just pushed as "sheet changes"
+                for (const cell of syncedCells) {
+                    this.lastSnapshot.set(`${cell.row}:${cell.col}`, cell.value);
+                }
+
+                console.log(`✅ Synced ${updates.length} cell(s) DB → Google Sheet`);
+            } catch (error: any) {
+                // Sheet went offline during sync - queue the changes
+                if (this.sheetOnline) {
+                    console.warn('⚠️ Google Sheets went offline during sync:', error.message);
+                    this.sheetOnline = false;
+                    this.lastSheetError = error.message;
+                }
+                
+                // Queue all pending changes
+                for (const cell of syncedCells) {
+                    await this.queuePendingChange('sheet', {
+                        row: cell.row,
+                        col: cell.col,
+                        value: cell.value,
+                        source: 'db_sync'
+                    });
+                }
             }
-
-            // Update the in-memory snapshot so the next poll doesn't
-            // re-detect the values we just pushed as "sheet changes"
-            for (const cell of syncedCells) {
-                this.lastSnapshot.set(`${cell.row}:${cell.col}`, cell.value);
-            }
-
-            console.log(`✅ Synced ${updates.length} cell(s) DB → Google Sheet`);
         } catch (error: any) {
             console.error('❌ DB → Sheet sync failed:', error.message);
             if (error.response) {
                 console.error('Google API Error:', error.response.data);
             }
         }
+    }
+
+    /**
+     * Save DB snapshot to Redis
+     */
+    private async saveDbSnapshotToRedis(rows: any[]): Promise<void> {
+        try {
+            await redisClient.set(
+                REDIS_KEYS.DB_SNAPSHOT,
+                JSON.stringify(rows),
+                'EX',
+                SNAPSHOT_TTL
+            );
+        } catch (error) {
+            console.warn('⚠️ Could not save DB snapshot to Redis:', error);
+        }
+    }
+
+    /**
+     * Load DB snapshot from Redis
+     */
+    private async loadDbSnapshotFromRedis(): Promise<any[]> {
+        try {
+            const cached = await redisClient.get(REDIS_KEYS.DB_SNAPSHOT);
+            if (cached) {
+                return JSON.parse(cached);
+            }
+        } catch (error) {
+            console.warn('⚠️ Could not load DB snapshot from Redis:', error);
+        }
+        return [];
     }
 }
 

@@ -71,8 +71,8 @@ const sheetUpdateWorker = new Worker(
         connection: redisClient,
         concurrency: 5,
         limiter: {
-            max: 55,        // Max 55 jobs per window (Google's limit is ~60/min)
-            duration: 60000, // Per 60 seconds
+            max: 55,        
+            duration: 60000, 
         },
     }
 );

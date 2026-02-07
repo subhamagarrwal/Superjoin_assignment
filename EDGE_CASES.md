@@ -550,7 +550,95 @@ if (query.length > 2000) {
 
 ## 🔧 Reliability & Fault Tolerance
 
-### 26. Webhook delivery failure
+### 26. Google Sheets goes offline (no internet)
+
+**The Problem:**  
+User's internet goes down, or Google has an outage. The CDC Monitor can't fetch sheet data. Sync stops completely.
+
+**The Solution — Optimistic Offline Mode:**
+
+1. **Redis Snapshot Storage**: Every successful sheet fetch saves the data to Redis:
+   ```typescript
+   await redisClient.set('snapshot:sheet', JSON.stringify(data), 'EX', 86400); // 24h TTL
+   ```
+
+2. **Pending Change Queue**: When Sheet is offline but DB changes occur, they're queued:
+   ```typescript
+   await redisClient.rpush('pending:to_sheet', JSON.stringify({
+       row, col, value, source, timestamp: Date.now()
+   }));
+   ```
+
+3. **Auto-Recovery**: When connectivity is restored, pending changes are automatically processed:
+   ```typescript
+   if (!this.sheetOnline) {
+       console.log('✅ Google Sheets connectivity restored');
+       this.sheetOnline = true;
+       await this.processPendingChanges('sheet');
+   }
+   ```
+
+**Why queue instead of dropping?** Data integrity. Users expect their DB changes to eventually sync to Sheet, even if there's a temporary outage.
+
+---
+
+### 27. Database goes offline
+
+**The Problem:**  
+MySQL server crashes or becomes unreachable. All queries fail, sync stops.
+
+**The Solution — Graceful Degradation:**
+
+1. **Offline Detection**: Specific error codes indicate DB is offline:
+   ```typescript
+   const offlineErrors = ['ECONNREFUSED', 'ETIMEDOUT', 'PROTOCOL_CONNECTION_LOST'];
+   ```
+
+2. **Cached Reads**: SELECT queries return cached data from Redis:
+   ```typescript
+   if (isDbOffline && isSelect) {
+       const cachedSnapshot = cdcMonitor.getCachedSnapshot();
+       return res.json({ data: cachedSnapshot, fromCache: true });
+   }
+   ```
+
+3. **Pending Write Queue**: Sheet changes are queued until DB is back:
+   ```typescript
+   await this.queuePendingChange('db', { row, col, value, source: 'sheet' });
+   ```
+
+4. **Auto-Flush on Recovery**: Queued changes are processed when DB is back online.
+
+---
+
+### 28. Both Sheet and DB go offline simultaneously
+
+**The Problem:**  
+Complete connectivity loss. Neither data source is available.
+
+**The Solution:**
+
+1. **Dual Redis Caches**: Both `snapshot:sheet` and `snapshot:db` are maintained
+2. **Read-Only Mode**: System serves cached data with clear `fromCache: true` flags
+3. **Change Accumulation**: Both pending queues (`pending:to_sheet`, `pending:to_db`) accumulate changes
+4. **Eventual Consistency**: When connectivity is restored, changes are replayed in order
+
+---
+
+### 29. Server restart with pending changes
+
+**The Problem:**  
+Server crashes with changes queued in Redis. Will they be lost?
+
+**The Solution:**  
+Pending changes are stored in Redis lists (persistent), not in-memory. On restart:
+1. `loadSnapshotFromRedis()` restores the last known state
+2. Pending queues are intact in Redis
+3. Normal polling resumes and auto-flushes queues when targets are online
+
+---
+
+### 30. Webhook delivery failure
 
 **The Problem:**  
 Google Sheet edit triggers webhook, but the backend is temporarily down. Edit is lost.
@@ -571,7 +659,7 @@ const queue = new Queue('sheet-update', {
 
 ---
 
-### 27. Redis connection drop
+### 31. Redis connection drop
 
 **The Problem:**  
 Redis server restarts. All active locks are lost. New lock attempts fail.
@@ -587,7 +675,7 @@ const redis = new Redis({
 
 ---
 
-### 28. MySQL pool exhaustion
+### 32. MySQL pool exhaustion
 
 **The Problem:**  
 Under heavy load, all 10 DB connections are in use. New requests fail.
@@ -603,29 +691,22 @@ const pool = mysql.createPool({
 
 ---
 
-### 29. Server restart mid-sync
+### 33. Server restart mid-sync
 
 **The Problem:**  
 Server crashes while syncing. When it restarts, the in-memory snapshot is empty — is data consistent?
 
 **The Solution:**  
-On startup, full sheet snapshot is loaded and compared against DB:
-```typescript
-async initialize() {
-    const sheetData = await this.fetchSheetData();
-    if (sheetData) {
-        this.lastSnapshot = sheetData;
-        await this.syncToDatabase(sheetData);
-        console.log('✅ Initial sync complete');
-    }
-}
-```
+On startup:
+1. First try to load cached snapshot from Redis (fast startup)
+2. Then fetch fresh data from Sheet
+3. Any inconsistencies are resolved by the normal diff logic
 
 The system is **self-healing** — any inconsistencies are resolved on restart.
 
 ---
 
-### 30. Empty/blank cells
+### 34. Empty/blank cells
 
 **The Problem:**  
 How do we distinguish "cell has empty string" from "cell doesn't exist"?
@@ -639,7 +720,7 @@ How do we distinguish "cell has empty string" from "cell doesn't exist"?
 
 ## 👥 Multiplayer Scenarios
 
-### 31. Multiple people editing different cells simultaneously
+### 35. Multiple people editing different cells simultaneously
 
 **The Problem:**  
 User A edits B3, User B edits D5, both at the same instant. Will they conflict?
@@ -649,7 +730,7 @@ No conflict — locks are **cell-level**, not table-level. Each user acquires th
 
 ---
 
-### 32. Multiple people editing the same cell simultaneously
+### 36. Multiple people editing the same cell simultaneously
 
 **The Problem:**  
 User A and User B both edit cell B3 within the same second.
@@ -668,7 +749,7 @@ The frontend can auto-retry or show a notification.
 
 ---
 
-### 33. Bot simulation: N bots targeting the same cell
+### 37. Bot simulation: N bots targeting the same cell
 
 **The Problem:**  
 Testing concurrency is hard. How do we prove the locking actually works?
@@ -695,9 +776,9 @@ Results show exactly which bots succeeded vs. got blocked, proving:
 | **Rate Limiting** | 3 |
 | **Security** | 7 |
 | **Data Validation** | 2 |
-| **Reliability** | 5 |
+| **Reliability & Offline Resilience** | 9 |
 | **Multiplayer** | 3 |
-| **Total** | **33** |
+| **Total** | **37** |
 
 ---
 

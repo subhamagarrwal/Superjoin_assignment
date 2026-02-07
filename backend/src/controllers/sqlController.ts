@@ -121,12 +121,14 @@ export async function executeSQL(req: Request, res: Response) {
                     success: true,
                     data: result,
                     rowsAffected: result.length,
+                    fromCache: false,
                 });
             } else {
                 res.json({
                     success: true,
                     data: [],
                     rowsAffected: result.affectedRows || 0,
+                    fromCache: false,
                 });
             }
 
@@ -139,10 +141,62 @@ export async function executeSQL(req: Request, res: Response) {
             }
         }
     } catch (error: any) {
+        // Check if DB is offline - try to serve from cache for SELECT queries
+        const isDbOffline = isDbOfflineError(error);
+        const isSelect = /^\s*SELECT/i.test(req.body.query);
+        
+        if (isDbOffline && isSelect) {
+            // Return cached data for SELECT queries
+            const cachedSnapshot = cdcMonitor.getCachedSnapshot();
+            if (cachedSnapshot.size > 0) {
+                // Convert snapshot to rows format
+                const rows: any[] = [];
+                for (const [key, value] of cachedSnapshot.entries()) {
+                    const [rowNum, colName] = key.split(':');
+                    rows.push({
+                        row_num: parseInt(rowNum),
+                        col_name: colName,
+                        cell_value: value,
+                        last_modified_by: 'cached'
+                    });
+                }
+                
+                res.json({
+                    success: true,
+                    data: rows,
+                    rowsAffected: rows.length,
+                    fromCache: true,
+                    warning: 'Database is offline. Showing cached data.',
+                });
+                return;
+            }
+        }
+        
         logger.error({ error: error.message, owner }, 'SQL execution failed');
-        res.status(400).json({
+        res.status(isDbOffline ? 503 : 400).json({
             success: false,
-            error: error.message || 'SQL execution failed',
+            error: isDbOffline 
+                ? 'Database is currently unavailable. Please try again later.'
+                : (error.message || 'SQL execution failed'),
+            dbOffline: isDbOffline,
         });
     }
+}
+
+/**
+ * Check if an error indicates DB is offline
+ */
+function isDbOfflineError(error: any): boolean {
+    const offlineErrors = [
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'ENOTFOUND',
+        'PROTOCOL_CONNECTION_LOST',
+        'ECONNRESET'
+    ];
+    return offlineErrors.some(e => 
+        error.code === e || 
+        error.message?.includes(e) ||
+        error.errno === e
+    );
 }
