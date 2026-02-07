@@ -1,9 +1,34 @@
 import { Router, Request, Response } from 'express';
 import { initializeDatabase } from '../utils/dbInit';
+import cdcMonitor from '../services/cdcMonitor';
 import pino from 'pino';
 
 const router = Router();
 const logger = pino();
+
+// Initialize database tables
+router.post('/init', async (req: Request, res: Response) => {
+    try {
+        logger.info('Initializing database');
+        await initializeDatabase();
+        res.json({ success: true, message: 'Database initialized successfully' });
+    } catch (error: any) {
+        logger.error({ error }, 'Database initialization failed');
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Force sync DB → Sheet
+router.post('/force-sync-to-sheet', async (req: Request, res: Response) => {
+    try {
+        logger.info('Forcing DB → Sheet sync');
+        await cdcMonitor.syncFromDatabase();
+        res.json({ success: true, message: 'Synced database to Google Sheet' });
+    } catch (error: any) {
+        logger.error({ error }, 'Force sync failed');
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 
 // Optional manual re-init endpoint (backup only)
 router.post('/init-db', async (req: Request, res: Response) => {
