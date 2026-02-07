@@ -29,7 +29,7 @@ export default function SQLTerminal({ onQueryExecuted }: Props) {
   const [results, setResults] = useState<QueryResult[]>([]);
   const [loading, setLoading] = useState(false);
   const editorRef = useRef<any>(null);
-  const { isBackendOnline, addToOfflineQueue, offlineQueue } = useConnectivity();
+  const { isBackendOnline, addToOfflineQueue } = useConnectivity();
 
   const handleEditorMount = (editor: any) => {
     editorRef.current = editor;
