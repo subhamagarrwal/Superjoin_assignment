@@ -3,10 +3,11 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import pino from 'pino'
-import { testDatabaseConnection } from './utils/dbInit';
+import { testDatabaseConnection, initializeDatabase } from './utils/dbInit';
 import redisClient from './config/redis';
 import webhookRoutes from './routes/webhook_routes';
 import sqlRoutes from './routes/sqlroutes';
+import setupRoutes from './routes/setup.routes';
 import './workers/sheetUpdateWorker';
 import cdcMonitor from './services/cdcMonitor';
 
@@ -55,9 +56,9 @@ app.get('/health', async (req:Request, res:Response) => {
     });
 });
 
-// Routes
-app.use('/api/webhook', webhookRoutes);
+app.use('/api/webhook', webhookRoutes); 
 app.use('/api/sql', sqlRoutes);
+app.use('/api/setup', setupRoutes);
 
 // 404 handler
 app.use((req:Request, res:Response) => {
@@ -70,10 +71,13 @@ app.use((err:any, req:Request, res:Response, next:NextFunction)=>{
     res.status(500).json({error: 'Internal Server Error'});
 });
 
-app.listen(PORT, async () => {
+app.listen(PORT, async ()=>{
     logger.info(`Server running in ${NODE_ENV} mode on port ${PORT}`);
-    
-    // Start CDC Monitor
+
+    //initialize db
+    await initializeDatabase();
+
+    //start CDC monitor
     await cdcMonitor.start();
 });
 

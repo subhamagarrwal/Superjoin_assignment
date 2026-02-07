@@ -1,37 +1,35 @@
 import pool from '../config/database';
 import pino from 'pino';
-import fs from 'fs';
-import path from 'path';
 
 const logger = pino();
 
-export async function initializeDatabase() {
+export async function testDatabaseConnection(): Promise<boolean> {
     try {
-        const sqlPath = path.join(__dirname, '../../scripts/init-db.sql');
-        const sql = fs.readFileSync(sqlPath, 'utf-8');
-        const statements = sql.split(';')
-                              .map(stmt => stmt.trim())
-                              .filter(stmt => stmt.length > 0);
-
-        for (const stmt of statements) {
-            await pool.query(stmt);
-        }
-        logger.info('Database initialized successfully');
-    }
-    catch (err) {
-        logger.error({ err }, 'Database initialization failed');
-        throw err;
+        await pool.query('SELECT 1');
+        logger.info('Database connection successful');
+        return true;
+    } catch (error) {
+        logger.error({ error }, 'Database connection failed');
+        return false;
     }
 }
 
-export async function testDatabaseConnection() {
-     try {
-        const [rows] = await pool.query('SELECT 1 as test');
-        logger.info('Database connection test successful');
-        return true;
-    } 
-    catch (error) {
-        logger.error({ error }, 'Database connection test failed');
-        return false;
-    }   
+export async function initializeDatabase(): Promise<void> {
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                row_num INT NOT NULL,
+                col_name VARCHAR(10) NOT NULL,
+                cell_value TEXT,
+                last_modified_by VARCHAR(50) DEFAULT 'user',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_cell (row_num, col_name)
+            )
+        `);
+        logger.info('Users table initialized');
+    } catch (error) {
+        logger.error({ error }, 'Failed to initialize database');
+        throw error;
+    }
 }
