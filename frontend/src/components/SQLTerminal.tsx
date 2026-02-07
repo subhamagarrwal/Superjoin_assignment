@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import axios from 'axios';
+import { useConnectivity } from '../context/ConnectivityContext';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
@@ -28,6 +29,7 @@ export default function SQLTerminal({ onQueryExecuted }: Props) {
   const [results, setResults] = useState<QueryResult[]>([]);
   const [loading, setLoading] = useState(false);
   const editorRef = useRef<any>(null);
+  const { isBackendOnline, addToOfflineQueue, offlineQueue } = useConnectivity();
 
   const handleEditorMount = (editor: any) => {
     editorRef.current = editor;
@@ -45,6 +47,16 @@ export default function SQLTerminal({ onQueryExecuted }: Props) {
   const executeQuery = async () => {
     const trimmed = query.trim();
     if (!trimmed) return;
+
+    if (!isBackendOnline) {
+      addToOfflineQueue(trimmed);
+      const result: QueryResult = {
+        success: false,
+        error: `⏳ Backend offline - Query queued for execution when backend comes online`,
+      };
+      setResults(prev => [result, ...prev].slice(0, 20));
+      return;
+    }
 
     setLoading(true);
     try {
@@ -100,9 +112,13 @@ export default function SQLTerminal({ onQueryExecuted }: Props) {
           <button
             onClick={executeQuery}
             disabled={loading}
-            className="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded text-sm font-medium disabled:opacity-50"
+            className={`${
+              isBackendOnline 
+                ? 'bg-green-600 hover:bg-green-700' 
+                : 'bg-orange-600 hover:bg-orange-700'
+            } text-white px-4 py-1 rounded text-sm font-medium disabled:opacity-50`}
           >
-            {loading ? '⏳ Running...' : '▶ Run (Ctrl+Enter)'}
+            {loading ? '⏳ Running...' : isBackendOnline ? '▶ Run (Ctrl+Enter)' : '📥 Queue (Offline)'}
           </button>
         </div>
       </div>

@@ -14,6 +14,7 @@
 - [Environment Variables](#-environment-variables)
 - [Testing the Sync](#-testing-the-sync)
 - [Nuances & Edge Cases Handled](#-nuances--edge-cases-handled)
+- [Offline Resilience](#-offline-resilience)
 - [What Could Have Been Done](#-what-could-have-been-done)
 
 ---
@@ -139,6 +140,7 @@ Create `frontend/.env`:
 
 ```env
 VITE_API_URL=http://localhost:3000
+VITE_GOOGLE_SHEET_ID=your_google_sheet_id_here
 ```
 
 ### 3. Create the MySQL Database
@@ -266,6 +268,22 @@ Open **http://localhost:5173** — you'll see the embedded Google Sheet, the dat
 
 ---
 
+## 🔌 Offline Resilience
+
+The system is designed to degrade gracefully when the backend is unavailable. See [OFFLINE.md](OFFLINE.md) for a detailed breakdown.
+
+**Summary:**
+
+| Feature | Online | Offline |
+|---------|--------|---------|
+| Google Sheet (iframe) | ✅ Visible + editable | ✅ Visible + editable |
+| Database View | ✅ Live data from MySQL | ❌ Hidden |
+| SQL Terminal | ✅ Executes immediately | ✅ Queues to localStorage |
+| Offline Queue | — | ✅ Auto-replays on reconnect |
+| Graceful Shutdown | — | ✅ CDC Monitor, Worker, DB pool, Redis all cleaned up |
+
+---
+
 ## 💡 What Could Have Been Done
 
 ### With More Time
@@ -336,9 +354,12 @@ Superjoin_assignment/
 │   │   ├── components/
 │   │   │   ├── SheetViewer.tsx       # Embedded sheet + DB grid
 │   │   │   └── SQLTerminal.tsx       # Monaco SQL editor + results
+│   │   ├── context/
+│   │   │   └── ConnectivityContext.tsx # Backend health + offline queue
 │   │   └── main.tsx
 │   └── package.json
 └── README.md                         # ← You are here
+└── OFFLINE.md                        # Offline resilience documentation
 ```
 
 ---

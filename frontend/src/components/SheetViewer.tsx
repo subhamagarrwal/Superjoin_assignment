@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import axios from 'axios';
+import { useConnectivity } from '../context/ConnectivityContext';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
@@ -25,8 +26,15 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { isBackendOnline } = useConnectivity();
 
   const fetchData = useCallback(async () => {
+    if (!isBackendOnline) {
+      setError('Backend is offline');
+      setLoading(false);
+      return;
+    }
+
     try {
       const response = await axios.post(`${API_URL}/api/sql/execute`, {
         query: 'SELECT row_num, col_name, cell_value, last_modified_by, updated_at FROM users ORDER BY row_num, col_name',
@@ -41,17 +49,17 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
       console.error('Failed to fetch data:', err);
     }
     setLoading(false);
-  }, []);
+  }, [isBackendOnline]);
 
   useEffect(() => {
     fetchData();
-  }, [fetchData, refreshKey]);
+  }, [fetchData, refreshKey, isBackendOnline]);
 
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefresh || !isBackendOnline) return;
     const interval = setInterval(fetchData, 2000);
     return () => clearInterval(interval);
-  }, [autoRefresh, fetchData]);
+  }, [autoRefresh, fetchData, isBackendOnline]);
 
   const maxRow = Math.max(DEFAULT_ROWS, ...cells.map(c => c.row_num), 0);
 
@@ -60,48 +68,6 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
     return cell?.cell_value || '';
   };
 
-  if (error && cells.length === 0) {
-    return (
-      <div className="h-full flex flex-col">
-        {sheetId && (
-          <div className="h-1/2 flex flex-col border-b border-gray-700">
-            <div className="px-3 py-2 bg-gray-800 border-b border-gray-700">
-              <span className="text-gray-300 text-sm font-medium">📊 Google Sheet (Live)</span>
-            </div>
-            <iframe
-              src={`https://docs.google.com/spreadsheets/d/${sheetId}/edit?rm=minimal`}
-              className="flex-1 w-full border-0"
-              title="Google Sheet"
-            />
-          </div>
-        )}
-        <div className="flex-1 flex items-center justify-center bg-gray-800">
-          <div className="text-center">
-            <p className="text-red-400 text-sm mb-2">❌ {error}</p>
-            <p className="text-gray-500 text-xs">Make sure backend is running on {API_URL}</p>
-            <button
-              onClick={fetchData}
-              className="mt-3 bg-blue-600 hover:bg-blue-700 text-white px-4 py-1 rounded text-sm"
-            >
-              Retry
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div className="h-full flex items-center justify-center bg-gray-800">
-        <div className="text-gray-400 flex items-center gap-2">
-          <div className="animate-spin w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full"></div>
-          Connecting to backend...
-        </div>
-      </div>
-    );
-  }
-
   const embedUrl = sheetId
     ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit?rm=minimal`
     : null;
@@ -109,7 +75,7 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
   return (
     <div className="h-full flex flex-col">
       {embedUrl && (
-        <div className="h-1/2 flex flex-col border-b border-[#333]">
+        <div className={`${!isBackendOnline ? 'flex-1' : 'h-1/2'} flex flex-col border-b border-[#333]`}>
           <div className="px-4 py-3 bg-[#1e1e1e] border-b border-[#333] flex items-center justify-between">
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
@@ -133,6 +99,7 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
         </div>
       )}
 
+      {isBackendOnline && (
       <div className={`${embedUrl ? 'h-1/2' : 'h-full'} flex flex-col bg-[#1e1e1e]`}>
         <div className="px-4 py-2 border-b border-[#333] flex justify-between items-center bg-[#252526]">
           <div className="flex items-center gap-3">
@@ -211,6 +178,7 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
           </table>
         </div>
       </div>
+      )}
     </div>
   );
 }

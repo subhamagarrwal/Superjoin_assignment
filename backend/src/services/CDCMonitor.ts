@@ -41,6 +41,9 @@ export class CDCMonitor {
     private dbOnline: boolean = true;
     private lastSheetError: string = '';
     private lastDbError: string = '';
+    private lastChangeDetectedAt: number = 0;
+    private lastSyncToDbAt: number = 0;
+    private lastSyncToSheetAt: number = 0;
 
     private syncDebounceTimer: NodeJS.Timeout | null = null;
     private readonly SYNC_DEBOUNCE = 500;
@@ -62,6 +65,9 @@ export class CDCMonitor {
             // Then try to fetch fresh data
             await this.loadInitialSnapshot();
 
+            // Process any pending changes that were queued while offline
+            await this.processPendingChangesOnStartup();
+
             console.log('✅ CDC Monitor initialized');
         } catch (error) {
             console.error('❌ CDC Monitor initialization failed:', error);
@@ -69,9 +75,37 @@ export class CDCMonitor {
             const recovered = await this.loadSnapshotFromRedis();
             if (recovered) {
                 console.log('⚠️ Running in offline mode with cached data');
+                // Still try to process pending changes
+                await this.processPendingChangesOnStartup();
             } else {
                 throw error;
             }
+        }
+    }
+
+    /**
+     * Process pending changes that were queued while services were offline
+     * Called on startup to ensure nothing is lost
+     */
+    private async processPendingChangesOnStartup(): Promise<void> {
+        console.log('🔍 Checking for pending offline changes...');
+        
+        // Check pending changes to DB (from sheet edits while DB was down)
+        const pendingToDbCount = await redisClient.llen(REDIS_KEYS.PENDING_TO_DB).catch(() => 0);
+        if (pendingToDbCount > 0) {
+            console.log(`📥 Found ${pendingToDbCount} pending changes to sync to DB`);
+            await this.processPendingChanges('db');
+        }
+        
+        // Check pending changes to Sheet (from SQL queries while Sheet was down)
+        const pendingToSheetCount = await redisClient.llen(REDIS_KEYS.PENDING_TO_SHEET).catch(() => 0);
+        if (pendingToSheetCount > 0) {
+            console.log(`📥 Found ${pendingToSheetCount} pending changes to sync to Sheet`);
+            await this.processPendingChanges('sheet');
+        }
+        
+        if (pendingToDbCount === 0 && pendingToSheetCount === 0) {
+            console.log('✅ No pending offline changes');
         }
     }
 
@@ -150,6 +184,7 @@ export class CDCMonitor {
                 if (!item) break;
 
                 const change = JSON.parse(item);
+                console.log(`   📤 Replaying: ${change.col}${change.row} = "${change.value}" (queued at ${new Date(change.timestamp).toLocaleTimeString()})`);
                 
                 try {
                     if (target === 'sheet') {
@@ -158,6 +193,7 @@ export class CDCMonitor {
                         await this.pushSingleCellToDb(change.row, change.col, change.value, change.source);
                     }
                     processed++;
+                    console.log(`   ✅ Replayed ${change.col}${change.row} to ${target}`);
                 } catch (error) {
                     // Re-queue failed changes
                     await redisClient.rpush(key, item);
@@ -474,7 +510,12 @@ export class CDCMonitor {
             }
 
             if (changes.length > 0) {
-                console.log(`\n📝 Detected ${changes.length} change(s) from Google Sheet:`);
+                const now = Date.now();
+                const timeSinceLastChange = this.lastChangeDetectedAt > 0 
+                    ? ` (Δ${now - this.lastChangeDetectedAt}ms since last detection)` 
+                    : ' (first detection)';
+                
+                console.log(`\n📝 Detected ${changes.length} change(s) from Google Sheet${timeSinceLastChange}:`);
 
                 for (const change of changes) {
                     console.log(`   ${change.col}${change.row}: "${change.oldValue}" → "${change.newValue}"`);
@@ -496,7 +537,13 @@ export class CDCMonitor {
                                 [change.row, change.col, change.newValue]
                             );
                         }
-                        console.log(`   ✅ Synced ${change.col}${change.row} to database`);
+                        
+                        const now = Date.now();
+                        const timeSinceLastSync = this.lastSyncToDbAt > 0 
+                            ? ` (Δ${now - this.lastSyncToDbAt}ms since last sync to DB)` 
+                            : '';
+                        console.log(`   ✅ Synced ${change.col}${change.row} to database${timeSinceLastSync}`);
+                        this.lastSyncToDbAt = now;
                         
                         // Mark DB as online
                         if (!this.dbOnline) {
@@ -523,6 +570,8 @@ export class CDCMonitor {
                         }
                     }
                 }
+                
+                this.lastChangeDetectedAt = now;
             }
 
             this.lastSnapshot = currentData;
@@ -680,7 +729,12 @@ export class CDCMonitor {
                     this.lastSnapshot.set(`${cell.row}:${cell.col}`, cell.value);
                 }
 
-                console.log(`✅ Synced ${updates.length} cell(s) DB → Google Sheet`);
+                const now = Date.now();
+                const timeSinceLastSync = this.lastSyncToSheetAt > 0 
+                    ? ` (Δ${now - this.lastSyncToSheetAt}ms since last sync to Sheet)` 
+                    : '';
+                console.log(`✅ Synced ${updates.length} cell(s) DB → Google Sheet${timeSinceLastSync}`);
+                this.lastSyncToSheetAt = now;
             } catch (error: any) {
                 // Sheet went offline during sync - queue the changes
                 if (this.sheetOnline) {

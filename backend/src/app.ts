@@ -9,7 +9,9 @@ import configRoutes from './routes/config.routes';
 import botRoutes from './routes/bot.routes';
 import { initializeDatabase } from './utils/dbInit';
 import cdcMonitor from './services/cdcMonitor';
-import './workers/sheetUpdateWorker';
+import sheetUpdateWorker from './workers/sheetUpdateWorker';
+import pool from './config/database';
+import redisClient from './config/redis';
 
 dotenv.config();
 const logger = pino();
@@ -65,6 +67,34 @@ async function startServer() {
         process.exit(1);
     }
 }
+
+// Graceful shutdown handler
+async function gracefulShutdown(signal: string) {
+    console.log(`\n⏹️ ${signal} received, shutting down gracefully...`);
+    
+    console.log('🔄 Stopping CDC Monitor...');
+    cdcMonitor.stop();
+    
+    console.log('🔄 Closing Sheet Update Worker...');
+    await sheetUpdateWorker.close();
+    
+    console.log('🔄 Closing database pool...');
+    await pool.end();
+    
+    console.log('🔄 Closing Redis connection...');
+    await redisClient.quit();
+    
+    console.log('✅ All services stopped. Goodbye!\n');
+    process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+process.on('uncaughtException', async (error) => {
+    console.error('❌ Uncaught exception:', error);
+    await gracefulShutdown('UNCAUGHT_EXCEPTION');
+});
 
 startServer();
 

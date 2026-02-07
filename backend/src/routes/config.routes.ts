@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import cdcMonitor from '../services/CDCMonitor';
+import cdcMonitor from '../services/cdcMonitor';
 
 const router = Router();
 

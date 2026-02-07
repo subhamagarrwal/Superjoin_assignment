@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import SQLTerminal from './components/SQLTerminal';
 import SheetViewer from './components/SheetViewer';
+import { ConnectivityProvider, useConnectivity } from './context/ConnectivityContext';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
@@ -35,8 +36,19 @@ function App() {
   const [botCount, setBotCount] = useState(8);
 
   useEffect(() => {
+    const envSheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+    if (envSheetId) {
+      setSheetId(envSheetId);
+    } else {
+      const cached = localStorage.getItem('superjoin_sheet_id');
+      if (cached) setSheetId(cached);
+    }
+
     axios.get(`${API_URL}/api/config/sheet-id`)
-      .then(res => setSheetId(res.data.sheetId))
+      .then(res => {
+        setSheetId(res.data.sheetId);
+        localStorage.setItem('superjoin_sheet_id', res.data.sheetId);
+      })
       .catch(err => console.error('Failed to fetch sheet ID:', err));
   }, []);
 
@@ -44,7 +56,45 @@ function App() {
     setRefreshKey(prev => prev + 1);
   };
 
+  return (
+    <ConnectivityProvider>
+      <AppContent 
+        refreshKey={refreshKey}
+        sheetId={sheetId}
+        handleQueryExecuted={handleQueryExecuted}
+        botRunning={botRunning}
+        setBotRunning={setBotRunning}
+        botResults={botResults}
+        setBotResults={setBotResults}
+        botCount={botCount}
+        setBotCount={setBotCount}
+        setRefreshKey={setRefreshKey}
+      />
+    </ConnectivityProvider>
+  );
+}
+
+interface AppContentProps {
+  refreshKey: number;
+  sheetId: string | null;
+  handleQueryExecuted: () => void;
+  botRunning: boolean;
+  setBotRunning: (v: boolean) => void;
+  botResults: BotSimResponse | null;
+  setBotResults: (v: BotSimResponse | null) => void;
+  botCount: number;
+  setBotCount: (v: number) => void;
+  setRefreshKey: React.Dispatch<React.SetStateAction<number>>;
+}
+
+function AppContent({ 
+  refreshKey, sheetId, handleQueryExecuted, botRunning, setBotRunning, 
+  botResults, setBotResults, botCount, setBotCount, setRefreshKey 
+}: AppContentProps) {
+  const { isBackendOnline } = useConnectivity();
+
   const runBots = async () => {
+    if (!isBackendOnline) return;
     setBotRunning(true);
     setBotResults(null);
     try {
@@ -80,10 +130,10 @@ function App() {
                 </label>
                 <button
                   onClick={runBots}
-                  disabled={botRunning}
+                  disabled={botRunning || !isBackendOnline}
                   className="bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white px-4 py-1.5 rounded text-xs font-medium transition-all"
                 >
-                  {botRunning ? 'Running...' : 'Launch Bots'}
+                  {botRunning ? 'Running...' : !isBackendOnline ? 'Offline' : 'Launch Bots'}
                 </button>
               </div>
             </div>
