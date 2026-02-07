@@ -182,17 +182,3 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
     </div>
   );
 }
-
-{
-  "scripts": {
-    "dev": "tsx watch src/app.ts",
-    "start": "tsx src/app.ts",
-    "build": "tsc",
-    "prod": "node dist/app.js"
-  },
-  "devDependencies": {
-    "tsx": "^4.7.0",
-    "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
-  }
-}
