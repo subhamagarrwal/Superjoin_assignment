@@ -6,7 +6,6 @@ import pino from 'pino';
 const router = Router();
 const logger = pino();
 
-// Initialize database tables
 router.post('/init', async (req: Request, res: Response) => {
     try {
         logger.info('Initializing database');
@@ -18,7 +17,6 @@ router.post('/init', async (req: Request, res: Response) => {
     }
 });
 
-// Force sync DB → Sheet
 router.post('/force-sync-to-sheet', async (req: Request, res: Response) => {
     try {
         logger.info('Forcing DB → Sheet sync');
@@ -30,7 +28,6 @@ router.post('/force-sync-to-sheet', async (req: Request, res: Response) => {
     }
 });
 
-// Optional manual re-init endpoint (backup only)
 router.post('/init-db', async (req: Request, res: Response) => {
     try {
         await initializeDatabase();

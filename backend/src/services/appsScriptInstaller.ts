@@ -70,7 +70,6 @@ export async function installAppsScript(sheetId: string): Promise<boolean> {
 
         const script = google.script({ version: 'v1', auth: jwtClient });
 
-        // Step 1: Create a new Apps Script project bound to the sheet
         const createRes = await script.projects.create({
             requestBody: {
                 title: 'Superjoin Sync Script',
@@ -86,7 +85,6 @@ export async function installAppsScript(sheetId: string): Promise<boolean> {
 
         logger.info({ scriptId }, 'Apps Script project created');
 
-        // Step 2: Upload the script code
         await script.projects.updateContent({
             scriptId: scriptId,
             requestBody: {
@@ -112,7 +110,6 @@ export async function installAppsScript(sheetId: string): Promise<boolean> {
 
         logger.info({ scriptId, sheetId }, 'Apps Script code uploaded');
 
-        // Step 3: Deploy the script
         await script.projects.deployments.create({
             scriptId: scriptId,
             requestBody: {

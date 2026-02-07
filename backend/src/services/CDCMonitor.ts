@@ -3,13 +3,13 @@ import { JWT } from 'google-auth-library';
 import pool from '../config/database';
 import redisClient from '../config/redis';
 import pino from 'pino';
-import path from 'path';
 import dotenv from 'dotenv';
 dotenv.config();    
 const logger = pino();
 
 const SHEET_ID = process.env.GOOGLE_SHEET_ID!;
-const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || '3000');
+// Minimum 3 seconds to stay well under Google's 300 req/min quota
+const POLL_INTERVAL = Math.max(3000, parseInt(process.env.POLL_INTERVAL || '3000'));
 const SHEET_RANGE = process.env.SHEET_RANGE || 'Sheet1!A1:H20';
 
 export class CDCMonitor {
@@ -17,6 +17,15 @@ export class CDCMonitor {
     private sheets: any;
     private isRunning = false;
     private intervalId: NodeJS.Timeout | null = null;
+    private isPollInProgress = false;
+
+    // Rate limit backoff
+    private rateLimitedUntil: number = 0;
+    private rateLimitBackoffMs: number = 5000; // Start with 5s backoff
+    private consecutiveRateLimits: number = 0;
+
+    private syncDebounceTimer: NodeJS.Timeout | null = null;
+    private readonly SYNC_DEBOUNCE = 500;
 
     async initialize() {
         try {
@@ -49,12 +58,30 @@ export class CDCMonitor {
         console.log(`📊 Initial snapshot loaded: ${data.size} cells`);
     }
 
+    /**
+     * Fetches data from the Google Sheets API with rate-limit protection.
+     * Uses exponential backoff when rate-limited to avoid flooding the API.
+     */
     private async fetchSheetData(): Promise<Map<string, string> | null> {
+        // If we're in a rate-limit backoff window, skip this fetch
+        const now = Date.now();
+        if (now < this.rateLimitedUntil) {
+            // Silently skip - don't log every time
+            return null;
+        }
+
         try {
             const response = await this.sheets.spreadsheets.values.get({
                 spreadsheetId: SHEET_ID,
                 range: SHEET_RANGE,
             });
+
+            // Success - reset backoff
+            if (this.consecutiveRateLimits > 0) {
+                console.log('✅ Rate limit cleared, resuming normal polling');
+            }
+            this.consecutiveRateLimits = 0;
+            this.rateLimitBackoffMs = 5000;
 
             const rows = response.data.values || [];
             const cellMap = new Map<string, string>();
@@ -69,8 +96,22 @@ export class CDCMonitor {
             });
 
             return cellMap;
-        } catch (error) {
-            console.error('❌ Failed to fetch sheet data:', error);
+        } catch (error: any) {
+            if (error.code === 429 || error.status === 429) {
+                this.consecutiveRateLimits++;
+                // Exponential backoff: 5s, 10s, 20s, 40s, max 60s
+                this.rateLimitBackoffMs = Math.min(60000, this.rateLimitBackoffMs * 2);
+                this.rateLimitedUntil = Date.now() + this.rateLimitBackoffMs;
+                
+                // Only log the first hit and when backoff increases
+                if (this.consecutiveRateLimits === 1) {
+                    console.warn(`⚠️ Rate limited by Google Sheets API. Backing off for ${this.rateLimitBackoffMs / 1000}s...`);
+                } else if (this.consecutiveRateLimits % 5 === 0) {
+                    console.warn(`⚠️ Still rate limited (attempt ${this.consecutiveRateLimits}). Backoff: ${this.rateLimitBackoffMs / 1000}s`);
+                }
+            } else {
+                console.error('❌ Failed to fetch sheet data:', error.message || error);
+            }
             return null;
         }
     }
@@ -118,87 +159,105 @@ export class CDCMonitor {
     }
 
     private async pollForChanges() {
-        const currentData = await this.fetchSheetData();
-        if (!currentData) return;
+        // Prevent overlapping polls (if a fetch is slow and the next interval fires)
+        if (this.isPollInProgress) return;
+        this.isPollInProgress = true;
 
-        const changes: { row: number; col: string; oldValue: string; newValue: string }[] = [];
+        try {
+            const currentData = await this.fetchSheetData();
+            if (!currentData) return;
 
-        for (const [key, newValue] of currentData.entries()) {
-            const oldValue = this.lastSnapshot.get(key) || '';
-            if (oldValue !== newValue) {
-                const [rowStr, col] = key.split(':');
-                changes.push({
-                    row: parseInt(rowStr),
-                    col,
-                    oldValue,
-                    newValue,
-                });
-            }
-        }
+            const changes: { row: number; col: string; oldValue: string; newValue: string }[] = [];
 
-        for (const [key, oldValue] of this.lastSnapshot.entries()) {
-            if (!currentData.has(key) && oldValue !== '') {
-                const [rowStr, col] = key.split(':');
-                changes.push({
-                    row: parseInt(rowStr),
-                    col,
-                    oldValue,
-                    newValue: '',
-                });
-            }
-        }
-
-        if (changes.length > 0) {
-            console.log(`\n📝 Detected ${changes.length} change(s) from Google Sheet:`);
-
-            for (const change of changes) {
-                console.log(`   ${change.col}${change.row}: "${change.oldValue}" → "${change.newValue}"`);
-
-                const ignoreKey = `ignore:${change.row}:${change.col}`;
-                await redisClient.set(ignoreKey, '1', 'EX', 10).catch(() => {});
-
-                try {
-                    if (change.newValue === '') {
-                        await pool.query(
-                            'DELETE FROM users WHERE row_num = ? AND col_name = ?',
-                            [change.row, change.col]
-                        );
-                    } else {
-                        await pool.query(
-                            `INSERT INTO users (row_num, col_name, cell_value, last_modified_by)
-                             VALUES (?, ?, ?, 'sheet')
-                             ON DUPLICATE KEY UPDATE cell_value = VALUES(cell_value), last_modified_by = 'sheet'`,
-                            [change.row, change.col, change.newValue]
-                        );
-                    }
-                    console.log(`   ✅ Synced ${change.col}${change.row} to database`);
-                } catch (error) {
-                    console.error(`   ❌ Failed to sync ${change.col}${change.row}:`, error);
+            for (const [key, newValue] of currentData.entries()) {
+                const oldValue = this.lastSnapshot.get(key) || '';
+                if (oldValue !== newValue) {
+                    const [rowStr, col] = key.split(':');
+                    changes.push({
+                        row: parseInt(rowStr),
+                        col,
+                        oldValue,
+                        newValue,
+                    });
                 }
             }
-        }
 
-        this.lastSnapshot = currentData;
+            for (const [key, oldValue] of this.lastSnapshot.entries()) {
+                if (!currentData.has(key) && oldValue !== '') {
+                    const [rowStr, col] = key.split(':');
+                    changes.push({
+                        row: parseInt(rowStr),
+                        col,
+                        oldValue,
+                        newValue: '',
+                    });
+                }
+            }
+
+            if (changes.length > 0) {
+                console.log(`\n📝 Detected ${changes.length} change(s) from Google Sheet:`);
+
+                for (const change of changes) {
+                    console.log(`   ${change.col}${change.row}: "${change.oldValue}" → "${change.newValue}"`);
+
+                    const ignoreKey = `ignore:${change.row}:${change.col}`;
+                    await redisClient.set(ignoreKey, '1', 'EX', 10).catch(() => {});
+
+                    try {
+                        if (change.newValue === '') {
+                            await pool.query(
+                                'DELETE FROM users WHERE row_num = ? AND col_name = ?',
+                                [change.row, change.col]
+                            );
+                        } else {
+                            await pool.query(
+                                `INSERT INTO users (row_num, col_name, cell_value, last_modified_by)
+                                 VALUES (?, ?, ?, 'sheet')
+                                 ON DUPLICATE KEY UPDATE cell_value = VALUES(cell_value), last_modified_by = 'sheet'`,
+                                [change.row, change.col, change.newValue]
+                            );
+                        }
+                        console.log(`   ✅ Synced ${change.col}${change.row} to database`);
+                    } catch (error) {
+                        console.error(`   ❌ Failed to sync ${change.col}${change.row}:`, error);
+                    }
+                }
+            }
+
+            this.lastSnapshot = currentData;
+        } finally {
+            this.isPollInProgress = false;
+        }
+    }
+
+    debouncedSyncFromDatabase() {
+        if (this.syncDebounceTimer) {
+            clearTimeout(this.syncDebounceTimer);
+        }
+        this.syncDebounceTimer = setTimeout(async () => {
+            try {
+                await this.syncFromDatabase();
+            } catch (err) {
+                console.error('❌ Debounced DB → Sheet sync failed:', err);
+            }
+        }, this.SYNC_DEBOUNCE);
     }
 
     async syncFromDatabase() {
         try {
-            console.log('🔍 Checking for DB changes to sync to Google Sheet...');
-            
-            // Get all current cells in DB
             const [dbRows]: any = await pool.query(
                 `SELECT row_num, col_name, cell_value, last_modified_by FROM users 
                  ORDER BY row_num, col_name`
             );
 
-            // Get current sheet data
+            // Fetch FRESH sheet state for accurate comparison
             const sheetData = await this.fetchSheetData();
             if (!sheetData) return;
 
             const updates: { range: string; values: string[][] }[] = [];
             const cellsToSync: Set<string> = new Set();
+            const syncedCells: { row: number; col: string; value: string }[] = [];
 
-            // 1. Sync updates/inserts from DB
             for (const row of dbRows) {
                 const key = `${row.row_num}:${row.col_name}`;
                 cellsToSync.add(key);
@@ -206,36 +265,34 @@ export class CDCMonitor {
                 const sheetValue = sheetData.get(key) || '';
                 const dbValue = row.cell_value || '';
 
-                // Only sync if DB value differs from sheet AND was modified by SQL
                 if (dbValue !== sheetValue && row.last_modified_by !== 'sheet') {
                     const range = `Sheet1!${row.col_name}${row.row_num}`;
                     updates.push({
                         range,
                         values: [[dbValue]],
                     });
-                    console.log(`   📤 Update: ${row.col_name}${row.row_num} = "${dbValue}"`);
+                    syncedCells.push({ row: row.row_num, col: row.col_name, value: dbValue });
+                    console.log(`   📤 DB→Sheet: ${row.col_name}${row.row_num} = "${dbValue}"`);
                 }
             }
 
-            // 2. Sync deletes (cells in sheet but not in DB)
             for (const [key, sheetValue] of sheetData.entries()) {
                 if (!cellsToSync.has(key) && sheetValue !== '') {
                     const [rowStr, col] = key.split(':');
                     const range = `Sheet1!${col}${rowStr}`;
                     updates.push({
                         range,
-                        values: [['']],  // Clear the cell
+                        values: [['']],
                     });
-                    console.log(`   🗑️  Delete: ${col}${rowStr}`);
+                    console.log(`   🗑️  DB→Sheet delete: ${col}${rowStr}`);
                 }
             }
 
             if (updates.length === 0) {
-                console.log('ℹ️  No changes to sync');
                 return;
             }
 
-            console.log(`📡 Sending ${updates.length} updates to Google Sheet...`);
+            console.log(`📡 Pushing ${updates.length} update(s) to Google Sheet...`);
 
             await this.sheets.spreadsheets.values.batchUpdate({
                 spreadsheetId: SHEET_ID,
@@ -245,13 +302,22 @@ export class CDCMonitor {
                 },
             });
 
-            // Mark synced rows
-            await pool.query(
-                `UPDATE users SET last_modified_by = 'sheet' 
-                 WHERE last_modified_by != 'sheet'`
-            );
+            // Mark only the SPECIFIC cells we just synced (not a blanket update)
+            for (const cell of syncedCells) {
+                await pool.query(
+                    `UPDATE users SET last_modified_by = 'sheet' 
+                     WHERE row_num = ? AND col_name = ? AND last_modified_by != 'sheet'`,
+                    [cell.row, cell.col]
+                );
+            }
 
-            console.log(`✅ Synced ${updates.length} cell(s) from DB → Google Sheet`);
+            // Update the in-memory snapshot so the next poll doesn't
+            // re-detect the values we just pushed as "sheet changes"
+            for (const cell of syncedCells) {
+                this.lastSnapshot.set(`${cell.row}:${cell.col}`, cell.value);
+            }
+
+            console.log(`✅ Synced ${updates.length} cell(s) DB → Google Sheet`);
         } catch (error: any) {
             console.error('❌ DB → Sheet sync failed:', error.message);
             if (error.response) {

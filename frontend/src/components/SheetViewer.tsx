@@ -16,8 +16,8 @@ interface Props {
   refreshKey: number;
 }
 
-const COLUMNS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
-const DEFAULT_ROWS = 15;
+const COLUMNS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H','I'];
+const DEFAULT_ROWS = 30;
 
 export default function SheetViewer({ sheetId, refreshKey }: Props) {
   const [cells, setCells] = useState<CellData[]>([]);
@@ -49,7 +49,7 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const interval = setInterval(fetchData, 1000);
+    const interval = setInterval(fetchData, 2000);
     return () => clearInterval(interval);
   }, [autoRefresh, fetchData]);
 
@@ -60,11 +60,9 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
     return cell?.cell_value || '';
   };
 
-  // Error state
   if (error && cells.length === 0) {
     return (
       <div className="h-full flex flex-col">
-        {/* Google Sheet iframe */}
         {sheetId && (
           <div className="h-1/2 flex flex-col border-b border-gray-700">
             <div className="px-3 py-2 bg-gray-800 border-b border-gray-700">
@@ -93,7 +91,6 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
     );
   }
 
-  // Loading state
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center bg-gray-800">
@@ -111,7 +108,6 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
 
   return (
     <div className="h-full flex flex-col">
-      {/* Top: Embedded Google Sheet */}
       {embedUrl && (
         <div className="h-1/2 flex flex-col border-b border-[#333]">
           <div className="px-4 py-3 bg-[#1e1e1e] border-b border-[#333] flex items-center justify-between">
@@ -137,7 +133,6 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
         </div>
       )}
 
-      {/* Bottom: Database View */}
       <div className={`${embedUrl ? 'h-1/2' : 'h-full'} flex flex-col bg-[#1e1e1e]`}>
         <div className="px-4 py-2 border-b border-[#333] flex justify-between items-center bg-[#252526]">
           <div className="flex items-center gap-3">

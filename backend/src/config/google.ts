@@ -6,7 +6,6 @@ import pino from 'pino';
 dotenv.config();
 const logger = pino();
 
-// Create JWT client for service account authentication
 const jwtClient = new JWT({
     email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
     key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
@@ -14,7 +13,6 @@ const jwtClient = new JWT({
 });
 
 
-// Authenticate
 jwtClient.authorize((err) => {
     if (err) {
         logger.error({ err }, 'Google Sheets authentication failed');
@@ -23,7 +21,6 @@ jwtClient.authorize((err) => {
     }
 });
 
-// Create sheets API client
 export const sheets = google.sheets({ version: 'v4', auth: jwtClient });
 export {sheets, jwtClient};
 export default sheets;

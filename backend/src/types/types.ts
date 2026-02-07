@@ -25,7 +25,7 @@ export interface SyncEvent {
 
 export interface JobData{
     row: number;
-    col: string;  // Fixed: string not number
+    col: string;
     value: string;
     sheetId: string;
     timestamp: number;

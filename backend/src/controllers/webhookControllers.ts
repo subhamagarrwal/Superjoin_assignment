@@ -6,10 +6,17 @@ import pino from 'pino';
 
 const logger = pino();
 
+// ── Input validation constants ──
+const VALID_COL = /^[A-Z]$/;
+const MAX_VALUE_LENGTH = 5000;
+const SHEET_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const MAX_ROW = 10000;
+
 export async function handleWebhook(req: Request, res: Response) {
     try {
         const { row, col, value, sheetId } = req.body as WebhookPayload;
 
+        // ── Presence check ──
         if (!row || !col || value === undefined || !sheetId) {
             res.status(400).json({
                 success: false,
@@ -18,7 +25,27 @@ export async function handleWebhook(req: Request, res: Response) {
             return;
         }
 
-        // LOOP PREVENTION: Check if we recently synced this cell
+        // ── Type & range validation ──
+        if (typeof row !== 'number' || !Number.isInteger(row) || row < 1 || row > MAX_ROW) {
+            res.status(400).json({ success: false, error: `row must be an integer between 1 and ${MAX_ROW}` });
+            return;
+        }
+
+        if (typeof col !== 'string' || !VALID_COL.test(col)) {
+            res.status(400).json({ success: false, error: 'col must be a single uppercase letter A-Z' });
+            return;
+        }
+
+        if (typeof value !== 'string' || value.length > MAX_VALUE_LENGTH) {
+            res.status(400).json({ success: false, error: `value must be a string (max ${MAX_VALUE_LENGTH} chars)` });
+            return;
+        }
+
+        if (typeof sheetId !== 'string' || !SHEET_ID_PATTERN.test(sheetId)) {
+            res.status(400).json({ success: false, error: 'Invalid sheetId format' });
+            return;
+        }
+
         const ignoreKey = `ignore:${row}:${col}`;
         const shouldIgnore = await redisClient.get(ignoreKey);
 

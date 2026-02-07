@@ -17,6 +17,11 @@ const pool = mysql.createPool({
   queueLimit: 0,
   enableKeepAlive: true,
   keepAliveInitialDelay: 0,
+
+  // ── Security hardening ──
+  multipleStatements: false,             // Prevents stacked-query injection (e.g., "; DROP TABLE")
+  flags: ['-FOUND_ROWS'],               // Don't leak extra metadata
+  connectTimeout: 10000,                 // 10s connect timeout to prevent hanging
 });
 
 logger.info('MySQL pool created');

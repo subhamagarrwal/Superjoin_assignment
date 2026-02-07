@@ -16,7 +16,6 @@ export async function testDatabaseConnection(): Promise<boolean> {
 
 export async function initializeDatabase(): Promise<void> {
     try {
-        // Create users table if not exists
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
