@@ -22,10 +22,10 @@ const DEFAULT_ROWS = 30;
 
 export default function SheetViewer({ sheetId, refreshKey }: Props) {
   const [cells, setCells] = useState<CellData[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [_loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [_error, setError] = useState<string | null>(null);
   const { isBackendOnline } = useConnectivity();
 
   const fetchData = useCallback(async () => {
