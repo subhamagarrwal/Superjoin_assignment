@@ -113,9 +113,12 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
     <div className="h-full flex flex-col">
       {/* Top: Embedded Google Sheet */}
       {embedUrl && (
-        <div className="h-1/2 flex flex-col border-b border-gray-700">
-          <div className="px-3 py-2 bg-gray-800 border-b border-gray-700 flex items-center justify-between">
-            <span className="text-gray-300 text-sm font-medium">📊 Google Sheet (Live)</span>
+        <div className="h-1/2 flex flex-col border-b border-[#333]">
+          <div className="px-4 py-3 bg-[#1e1e1e] border-b border-[#333] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+              <span className="text-gray-200 text-sm font-semibold tracking-wide">Google Sheet (Live)</span>
+            </div>
             <a
               href={`https://docs.google.com/spreadsheets/d/${sheetId}/edit`}
               target="_blank"
@@ -135,31 +138,42 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
       )}
 
       {/* Bottom: Database View */}
-      <div className={`${embedUrl ? 'h-1/2' : 'h-full'} flex flex-col bg-gray-800`}>
-        <div className="px-3 py-2 border-b border-gray-700 flex justify-between items-center">
+      <div className={`${embedUrl ? 'h-1/2' : 'h-full'} flex flex-col bg-[#1e1e1e]`}>
+        <div className="px-4 py-2 border-b border-[#333] flex justify-between items-center bg-[#252526]">
           <div className="flex items-center gap-3">
-            <span className="text-gray-300 text-sm font-medium">🗄️ Database View</span>
-            <span className="text-gray-500 text-xs">
-              {cells.length} cell{cells.length !== 1 ? 's' : ''}
+            <span className="text-gray-300 text-xs font-semibold uppercase tracking-wider">Database View</span>
+            <span className="text-gray-500 text-xs bg-[#333] px-2 py-0.5 rounded-full">
+              {cells.length} cells
             </span>
           </div>
-          <div className="flex items-center gap-3">
-            <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={autoRefresh}
-                onChange={(e) => setAutoRefresh(e.target.checked)}
-                className="rounded"
-              />
-              Auto-refresh
+          <div className="flex items-center gap-4">
+            <label className="flex items-center gap-2 cursor-pointer group">
+              <div className="relative inline-flex items-center">
+                <input
+                  type="checkbox"
+                  checked={autoRefresh}
+                  onChange={(e) => setAutoRefresh(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-8 h-4 bg-gray-600 rounded-full peer peer-focus:ring-2 peer-focus:ring-blue-800 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
+              </div>
+              <span className="text-xs font-medium text-gray-400 group-hover:text-gray-300 transition-colors">Auto-sync</span>
             </label>
-            <span className="text-gray-500 text-xs">{lastUpdated}</span>
-            <button
-              onClick={fetchData}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-xs"
-            >
-              🔄
-            </button>
+            
+            <div className="h-4 w-px bg-[#444]"></div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-gray-500 text-[10px] font-mono">{lastUpdated}</span>
+              <button
+                onClick={fetchData}
+                className="text-gray-400 hover:text-white hover:bg-[#333] p-1.5 rounded transition-all"
+                title="Refresh Data"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3.5 h-3.5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
 

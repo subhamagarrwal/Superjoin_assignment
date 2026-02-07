@@ -76,12 +76,12 @@ export default function SQLTerminal({ onQueryExecuted }: Props) {
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
-      <div className="bg-gray-800 px-3 py-2 flex items-center justify-between border-b border-gray-700">
-        <div className="flex items-center gap-2">
-          <span className="text-gray-300 text-sm font-medium">💻 SQL Terminal</span>
+      <div className="bg-[#1e1e1e] px-4 py-3 flex items-center justify-between border-b border-[#333]">
+        <div className="flex items-center gap-3">
+          <span className="text-gray-200 text-sm font-semibold tracking-wide">SQL Terminal</span>
           <select
             onChange={(e) => loadSample(e.target.value)}
-            className="bg-gray-700 text-gray-300 text-xs px-2 py-1 rounded border border-gray-600"
+            className="bg-[#2d2d2d] text-gray-300 text-xs px-2 py-1.5 rounded border border-[#444] hover:border-[#666] transition-colors focus:outline-none focus:border-blue-500"
             defaultValue=""
           >
             <option value="" disabled>Sample Queries</option>
@@ -129,10 +129,10 @@ export default function SQLTerminal({ onQueryExecuted }: Props) {
       </div>
 
       {/* Results Panel */}
-      <div className="flex-1 bg-gray-850 border-t border-gray-700 overflow-auto">
-        <div className="px-3 py-2 bg-gray-800 border-b border-gray-700 sticky top-0">
-          <span className="text-gray-400 text-sm">
-            📊 Results {results.length > 0 && `(${results.length})`}
+      <div className="flex-1 bg-[#1e1e1e] border-t border-[#333] overflow-auto">
+        <div className="px-4 py-2 bg-[#252526] border-b border-[#333] sticky top-0 flex items-center gap-2">
+          <span className="text-gray-300 text-xs font-semibold uppercase tracking-wider">
+            Query Results {results.length > 0 && <span className="text-gray-500 font-normal normal-case ml-1">({results.length} results)</span>}
           </span>
         </div>
         <div className="p-3 space-y-3">
