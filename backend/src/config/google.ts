@@ -21,6 +21,6 @@ jwtClient.authorize((err) => {
     }
 });
 
-export const sheets = google.sheets({ version: 'v4', auth: jwtClient });
-export {sheets, jwtClient};
+const sheets = google.sheets({ version: 'v4', auth: jwtClient });
+export { sheets, jwtClient };
 export default sheets;

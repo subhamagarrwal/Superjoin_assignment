@@ -4,6 +4,7 @@ import axios from 'axios';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 const HEALTH_CHECK_INTERVAL = 3000;
 const OFFLINE_QUEUE_KEY = 'superjoin_offline_queue';
+const HEALTH_CHECK_TIMEOUT = 5000;
 
 interface QueuedQuery {
   id: string;
@@ -46,6 +47,7 @@ export function ConnectivityProvider({ children }: { children: ReactNode }) {
   const offlineQueueRef = useRef<QueuedQuery[]>(getInitialQueue());
   const isProcessingRef = useRef(false);
   const isOnlineRef = useRef(false);
+  const healthCheckIntervalRef = useRef<number | null>(null);
 
   useEffect(() => {
     offlineQueueRef.current = offlineQueue;
@@ -60,7 +62,9 @@ export function ConnectivityProvider({ children }: { children: ReactNode }) {
 
   const checkHealth = useCallback(async () => {
     try {
-      const response = await axios.get(`${API_URL}/health`, { timeout: 2000 });
+      const response = await axios.get(`${API_URL}/health`, { 
+        timeout: HEALTH_CHECK_TIMEOUT 
+      });
       if (response.data.status === 'ok') {
         setIsBackendOnline(true);
         setLastChecked(new Date().toLocaleTimeString());
@@ -79,14 +83,16 @@ export function ConnectivityProvider({ children }: { children: ReactNode }) {
   }, [wasOffline]);
 
   useEffect(() => {
-    const initialTimeout = setTimeout(() => {
-      checkHealth();
-    }, 100);
+    checkHealth();
     
-    const interval = setInterval(checkHealth, HEALTH_CHECK_INTERVAL);
+    healthCheckIntervalRef.current = setInterval(() => {
+      checkHealth();
+    }, HEALTH_CHECK_INTERVAL);
+    
     return () => {
-      clearTimeout(initialTimeout);
-      clearInterval(interval);
+      if (healthCheckIntervalRef.current) {
+        clearInterval(healthCheckIntervalRef.current);
+      }
     };
   }, [checkHealth]);
 
