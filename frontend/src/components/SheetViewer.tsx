@@ -49,7 +49,7 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const interval = setInterval(fetchData, 3000);
+    const interval = setInterval(fetchData, 1000);
     return () => clearInterval(interval);
   }, [autoRefresh, fetchData]);
 
