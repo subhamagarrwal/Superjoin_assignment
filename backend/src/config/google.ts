@@ -13,6 +13,7 @@ const jwtClient = new JWT({
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 
+
 // Authenticate
 jwtClient.authorize((err) => {
     if (err) {
@@ -24,5 +25,5 @@ jwtClient.authorize((err) => {
 
 // Create sheets API client
 export const sheets = google.sheets({ version: 'v4', auth: jwtClient });
-
+export {sheets, jwtClient};
 export default sheets;

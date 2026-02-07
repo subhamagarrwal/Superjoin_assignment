@@ -1,9 +1,11 @@
 import { google } from 'googleapis';
+import { JWT } from 'google-auth-library';
 import pool from '../config/database';
 import redisClient from '../config/redis';
 import pino from 'pino';
 import path from 'path';
-
+import dotenv from 'dotenv';
+dotenv.config();    
 const logger = pino();
 
 const SHEET_ID = process.env.GOOGLE_SHEET_ID!;
@@ -18,16 +20,14 @@ export class CDCMonitor {
 
     async initialize() {
         try {
-            const credentialsPath = path.join(
-                __dirname, '..', '..', 'credentials', 'service-account.json'
-            );
-
-            const auth = new google.auth.GoogleAuth({
-                keyFile: credentialsPath,
+            const jwtClient = new JWT({
+                email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+                key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
                 scopes: ['https://www.googleapis.com/auth/spreadsheets'],
             });
 
-            this.sheets = google.sheets({ version: 'v4', auth });
+            await jwtClient.authorize();
+            this.sheets = google.sheets({ version: 'v4', auth: jwtClient });
             await this.loadInitialSnapshot();
 
             console.log('✅ CDC Monitor initialized');
