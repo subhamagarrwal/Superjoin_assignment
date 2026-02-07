@@ -4,6 +4,7 @@ backend/.env
 .github/
 .vscode/
 .DS_Store
+backend/guides/
 
 //frontend
 frontend/node_modules/
