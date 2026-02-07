@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import Editor, { OnMount } from '@monaco-editor/react';
+import Editor from '@monaco-editor/react';
 import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
@@ -27,19 +27,15 @@ export default function SQLTerminal({ onQueryExecuted }: Props) {
   const [query, setQuery] = useState('SELECT * FROM users;');
   const [results, setResults] = useState<QueryResult[]>([]);
   const [loading, setLoading] = useState(false);
-  const [history, setHistory] = useState<string[]>([]);
   const editorRef = useRef<any>(null);
 
-  const handleEditorMount: OnMount = (editor) => {
+  const handleEditorMount = (editor: any) => {
     editorRef.current = editor;
 
-    // Ctrl+Enter to execute
     editor.addAction({
       id: 'execute-query',
       label: 'Execute Query',
-      keybindings: [
-        2048 | 3, // Ctrl+Enter
-      ],
+      keybindings: [2048 | 3],
       run: () => {
         executeQuery();
       },
@@ -58,7 +54,6 @@ export default function SQLTerminal({ onQueryExecuted }: Props) {
 
       const result: QueryResult = response.data;
       setResults(prev => [result, ...prev].slice(0, 20));
-      setHistory(prev => [trimmed, ...prev.filter(q => q !== trimmed)].slice(0, 50));
       onQueryExecuted();
     } catch (error: any) {
       const result: QueryResult = {
@@ -129,7 +124,6 @@ export default function SQLTerminal({ onQueryExecuted }: Props) {
             automaticLayout: true,
             wordWrap: 'on',
             padding: { top: 10 },
-            suggestOnTriggerCharacters: true,
           }}
         />
       </div>

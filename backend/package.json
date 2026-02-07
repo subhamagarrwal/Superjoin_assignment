@@ -9,7 +9,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
     "google-auth-library": "^10.5.0",
-    "googleapis": "^171.3.0",
+    "googleapis": "^171.4.0",
     "helmet": "^8.1.0",
     "ioredis": "^5.9.2",
     "joi": "^18.0.2",

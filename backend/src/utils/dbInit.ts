@@ -16,20 +16,23 @@ export async function testDatabaseConnection(): Promise<boolean> {
 
 export async function initializeDatabase(): Promise<void> {
     try {
+        // Create users table if not exists
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 row_num INT NOT NULL,
                 col_name VARCHAR(10) NOT NULL,
                 cell_value TEXT,
-                last_modified_by VARCHAR(50) DEFAULT 'user',
+                last_modified_by VARCHAR(50) DEFAULT 'system',
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE KEY unique_cell (row_num, col_name)
             )
         `);
-        logger.info('Users table initialized');
+
+        logger.info('✅ Database initialized - users table ready');
     } catch (error) {
-        logger.error({ error }, 'Failed to initialize database');
+        logger.error({ error }, '❌ Failed to initialize database');
         throw error;
     }
 }
