@@ -143,6 +143,7 @@ export async function runBotSimulation(req: Request, res: Response) {
 
         // Sync to Google Sheet after all bots finish
         try {
+            cdcMonitor.markDirty();
             await cdcMonitor.syncFromDatabase();
         } catch (err) {
             logger.error({ err }, 'Bot sync to sheet failed');

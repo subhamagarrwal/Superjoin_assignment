@@ -2,6 +2,7 @@ import { Worker, Job } from 'bullmq';
 import redisClient from '../config/redis';
 import pool from '../config/database';
 import lockService from '../services/lockService';
+import cdcMonitor from '../services/cdcMonitor';
 import { JobData } from '../types/types';
 import pino from 'pino';
 
@@ -79,6 +80,7 @@ const sheetUpdateWorker = new Worker(
 
 sheetUpdateWorker.on('completed', (job) => {
     console.log(`✅ [Job ${job?.id}] Completed successfully\n`);
+    cdcMonitor.debouncedSyncFromDatabase();
 });
 
 sheetUpdateWorker.on('failed', (job, err) => {

@@ -37,17 +37,20 @@ The system maintains **two independent data flows** that together form a bidirec
 
 ### Direction 2: MySQL → Google Sheet (On-Demand + Debounced)
 
-1. A user writes to the database via the **SQL Terminal** or the **Bot Simulator**.
-2. Every write operation triggers `cdcMonitor.debouncedSyncFromDatabase()`.
-3. After a **500ms debounce window** (to batch rapid edits), the system:
+1. A user writes to the database via the **SQL Terminal**, **Bot Simulator**, or **Webhook Worker**.
+2. Every write operation triggers `cdcMonitor.debouncedSyncFromDatabase()`, which sets a **dirty flag** and resets a 500ms timer.
+3. After the **500ms debounce window** expires (batching all rapid edits), the system:
+   - Checks the dirty flag — if no writes happened since the last sync, **skips entirely** (no DB query, no Sheets API call).
    - Reads all rows from MySQL.
    - Compares each cell against the current Google Sheet state.
-   - Sends a `batchUpdate` to the Sheets API for every cell where `last_modified_by ≠ 'sheet'`.
+   - Sends a single `batchUpdate` to the Sheets API for every cell where `last_modified_by ≠ 'sheet'`.
 4. After a successful push:
    - All synced rows are marked `last_modified_by = 'sheet'` so they aren't re-pushed.
    - The **in-memory snapshot is updated** to reflect the new sheet state.
 
 **Why debounce?** Without debouncing, 5 rapid SQL inserts would trigger 5 separate API calls. The debounce collapses them into one `batchUpdate`, reducing API usage by ~80%.
+
+**Why a dirty flag?** The debounce timer can fire even when no actual writes occurred (e.g., a read-only query path). The dirty flag ensures `syncFromDatabase()` short-circuits without making any DB or API calls when nothing changed.
 
 **Why update the snapshot?** After pushing DB changes to the Sheet, we immediately update the snapshot. This prevents the next poll from detecting the change we just pushed as a "new" change, breaking the echo loop before it starts.
 
@@ -57,6 +60,8 @@ An **Apps Script trigger** (auto-installable) fires `onEdit` for every manual sh
 - 3 retry attempts with exponential backoff
 - Worker concurrency of 5
 - Rate limiting (55 jobs / 60s to stay under Google API quotas)
+
+The webhook worker also triggers `debouncedSyncFromDatabase()` on job completion, so rapid webhook events are batched the same way as SQL terminal writes.
 
 > The webhook path and the CDC polling path are complementary. Polling catches everything (including programmatic edits); webhooks provide sub-second latency for interactive edits.
 
@@ -230,8 +235,9 @@ Open **http://localhost:5173** — you'll see the embedded Google Sheet, the dat
 | # | Edge Case | How It's Handled |
 |---|-----------|------------------|
 | 5 | Echo loop (Sheet→DB→Sheet→DB…) | Redis ignore-key (`ignore:{row}:{col}`) with 10s TTL; `last_modified_by` column tracks origin |
-| 7 | Rapid successive edits from DB side | **500ms debounce** window batches multiple writes into a single `batchUpdate` call |
+| 7 | Rapid successive edits from DB side | **500ms debounce** window batches multiple writes into a single `batchUpdate` call; **dirty flag** skips sync entirely when no writes occurred |
 | 7 | Google API rate limiting (429) | CDC Monitor uses **exponential backoff** (5s→10s→20s→max 60s) and silently skips polls during backoff; BullMQ worker has 55 jobs/min rate limiter |
+| 7b | Google API connection reset (`ECONNRESET`) | Caught gracefully in poll loop, init, and sync — marks Sheets as offline, retries on next poll cycle |
 | 8 | Cell deletion in sheet | Polling detects missing keys in snapshot diff → `DELETE FROM users` |
 | 9 | Cell deletion from DB side | `syncFromDatabase` detects cells in sheet that no longer exist in DB → pushes empty string |
 | 10 | Partial failure during batch sync | Each cell update is independent; one failure doesn't block others |
@@ -258,6 +264,7 @@ Open **http://localhost:5173** — you'll see the embedded Google Sheet, the dat
 | 23 | MySQL pool exhaustion | Connection pool with `waitForConnections: true` and 10-connection limit; requests queue instead of failing |
 | 24 | Server restart mid-sync | On startup, full sheet snapshot is loaded and synced to DB — self-healing |
 | 25 | Empty/blank cells | Skipped during initial sync; treated as deletions during polling |
+| 26 | Backend shutdown leaves orphan processes | **Graceful shutdown** handlers (`SIGTERM`, `SIGINT`, `uncaughtException`) stop CDC Monitor, BullMQ Worker, DB pool, and Redis |
 
 ### Multiplayer (Google Sheet)
 | # | Edge Case | How It's Handled |

@@ -47,6 +47,11 @@ export class CDCMonitor {
 
     private syncDebounceTimer: NodeJS.Timeout | null = null;
     private readonly SYNC_DEBOUNCE = 500;
+    private dbDirtySinceLastSync = false;
+
+    markDirty() {
+        this.dbDirtySinceLastSync = true;
+    }
 
     async initialize() {
         try {
@@ -69,12 +74,18 @@ export class CDCMonitor {
             await this.processPendingChangesOnStartup();
 
             console.log('✅ CDC Monitor initialized');
-        } catch (error) {
-            console.error('❌ CDC Monitor initialization failed:', error);
+        } catch (error: any) {
+            const errorMsg = error.code === 'ECONNRESET' 
+                ? 'Google API connection reset during initialization'
+                : `CDC Monitor initialization failed: ${error.message || error}`;
+            console.error(`❌ ${errorMsg}`);
+            
             // Try to recover from Redis cache
             const recovered = await this.loadSnapshotFromRedis();
             if (recovered) {
                 console.log('⚠️ Running in offline mode with cached data');
+                this.sheetOnline = false;
+                this.lastSheetError = errorMsg;
                 // Still try to process pending changes
                 await this.processPendingChangesOnStartup();
             } else {
@@ -575,12 +586,23 @@ export class CDCMonitor {
             }
 
             this.lastSnapshot = currentData;
+        } catch (error: any) {
+            if (error.code === 'ECONNRESET' || error.syscall === 'read') {
+                if (this.sheetOnline) {
+                    console.warn('⚠️ Google Sheets connection reset, will retry on next poll');
+                    this.sheetOnline = false;
+                    this.lastSheetError = 'Connection reset';
+                }
+            } else {
+                console.error('❌ Polling error:', error.message || error);
+            }
         } finally {
             this.isPollInProgress = false;
         }
     }
 
     debouncedSyncFromDatabase() {
+        this.dbDirtySinceLastSync = true;
         if (this.syncDebounceTimer) {
             clearTimeout(this.syncDebounceTimer);
         }
@@ -594,6 +616,11 @@ export class CDCMonitor {
     }
 
     async syncFromDatabase() {
+        if (!this.dbDirtySinceLastSync) {
+            return;
+        }
+        this.dbDirtySinceLastSync = false;
+
         try {
             // Check if DB is online
             let dbRows: any[];
@@ -737,10 +764,14 @@ export class CDCMonitor {
                 this.lastSyncToSheetAt = now;
             } catch (error: any) {
                 // Sheet went offline during sync - queue the changes
+                const errorMsg = error.code === 'ECONNRESET' 
+                    ? 'Connection reset during sync'
+                    : error.message || 'Unknown error';
+                    
                 if (this.sheetOnline) {
-                    console.warn('⚠️ Google Sheets went offline during sync:', error.message);
+                    console.warn(`⚠️ Google Sheets went offline during sync: ${errorMsg}`);
                     this.sheetOnline = false;
-                    this.lastSheetError = error.message;
+                    this.lastSheetError = errorMsg;
                 }
                 
                 // Queue all pending changes
@@ -754,7 +785,10 @@ export class CDCMonitor {
                 }
             }
         } catch (error: any) {
-            console.error('❌ DB → Sheet sync failed:', error.message);
+            const errorMsg = error.code === 'ECONNRESET' 
+                ? 'Connection reset' 
+                : error.message || 'Unknown error';
+            console.error(`❌ DB → Sheet sync failed: ${errorMsg}`);
             if (error.response) {
                 console.error('Google API Error:', error.response.data);
             }
