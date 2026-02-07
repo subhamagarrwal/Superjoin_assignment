@@ -20,7 +20,7 @@ function App() {
   };
 
   return (
-    <div className="h-screen flex flex-col bg-gray-900">
+    <div className="h-screen w-full flex flex-col bg-gray-900">
       <header className="bg-gray-800 px-6 py-3 border-b border-gray-700 flex items-center justify-between">
         <h1 className="text-xl font-bold text-white">
           ⚡ Superjoin - Sheet & DB Sync
@@ -34,7 +34,7 @@ function App() {
         <div className="w-1/2 border-r border-gray-700 flex flex-col">
           <SQLTerminal onQueryExecuted={handleQueryExecuted} />
         </div>
-        <div className="w-1/2 flex flex-col">
+        <div className="flex-1 flex flex-col">
           <SheetViewer sheetId={sheetId} refreshKey={refreshKey} />
         </div>
       </div>

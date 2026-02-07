@@ -163,7 +163,7 @@ export default function SheetViewer({ sheetId, refreshKey }: Props) {
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto p-2">
+        <div className="flex-1 overflow-auto p-2 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
           <table className="w-full border-collapse text-sm">
             <thead className="sticky top-0 z-10">
               <tr>
