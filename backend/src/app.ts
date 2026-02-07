@@ -19,7 +19,7 @@ const logger = pino();
 const app = express();
 
 app.use(cors({
-    origin: ['http://localhost:5173', 'http://localhost:3000', process.env.FRONTEND_URL],
+    origin: ['http://localhost:5173', 'http://localhost:3000', process.env.FRONTEND_URL].filter(Boolean) as string[],
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true,
 }));
